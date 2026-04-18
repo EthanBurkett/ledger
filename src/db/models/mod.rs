@@ -6,10 +6,13 @@
 //!    `crate::register_mongo_model!(YourStruct);` at the bottom of the file.
 //! 3. Add `pub mod transaction;` here so the module is linked and registration runs.
 
-pub mod example_account;
-
-#[allow(unused_imports)]
-pub use example_account::Account;
+pub mod blob;
+pub mod commit;
+pub mod index;
+pub mod path_index;
+pub mod r#ref;
+pub mod repo;
+pub mod tree;
 
 /// Registers a [`MongoModel`](crate::db::MongoModel) with the global sync registry.
 ///

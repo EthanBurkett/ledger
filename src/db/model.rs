@@ -18,19 +18,43 @@ pub trait MongoModel:
         Vec::new()
     }
 
-    fn collection(db: &Database) -> Collection<Self>
+    /// Typed collection handle from the global [`App`](crate::app::App).
+    ///
+    /// Panics if `App::init` has not yet been called.
+    fn collection() -> Collection<Self>
+    where
+        Self: Sized,
+    {
+        Self::collection_in(crate::app::App::get().db())
+    }
+
+    /// Typed collection handle bound to an explicit [`Database`].
+    fn collection_in(db: &Database) -> Collection<Self>
     where
         Self: Sized,
     {
         db.collection::<Self>(Self::COLLECTION_NAME)
     }
 
-    fn repository(db: &Database) -> Repository<Self>
+    /// High-level repository backed by the global [`App`](crate::app::App).
+    ///
+    /// Panics if `App::init` has not yet been called.
+    fn repository() -> Repository<Self>
     where
         Self: Sized,
     {
         Repository {
-            coll: Self::collection(db),
+            coll: Self::collection(),
+        }
+    }
+
+    /// High-level repository bound to an explicit [`Database`].
+    fn repository_in(db: &Database) -> Repository<Self>
+    where
+        Self: Sized,
+    {
+        Repository {
+            coll: Self::collection_in(db),
         }
     }
 }
@@ -49,10 +73,24 @@ pub struct Repository<T: MongoModel> {
     pub coll: Collection<T>,
 }
 
+impl<T: MongoModel> Default for Repository<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: MongoModel> Repository<T> {
-    pub fn new(db: &Database) -> Self {
+    /// Repository backed by the global [`App`](crate::app::App).
+    pub fn new() -> Self {
         Self {
-            coll: T::collection(db),
+            coll: T::collection(),
+        }
+    }
+
+    /// Repository bound to an explicit [`Database`].
+    pub fn new_in(db: &Database) -> Self {
+        Self {
+            coll: T::collection_in(db),
         }
     }
 
