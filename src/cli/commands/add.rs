@@ -9,25 +9,28 @@
 //!   directory", so `ledger add .` stages every tracked file under the
 //!   CWD.
 //!
+//! ### Change detection
+//!
+//! Before uploading anything, `add` builds a baseline of what the repo
+//! currently believes about each path by overlaying the staging index
+//! on top of HEAD's flattened tree. Every candidate file is hashed
+//! locally with `sha256(content)` — the same algorithm the server uses
+//! for blob IDs — and compared to the baseline. Unchanged files are
+//! silently skipped, so repeated `ledger add .` calls only transmit
+//! real changes.
+//!
 //! ### Ignore rules
 //!
-//! The walker respects (in order of precedence, later overrides earlier):
+//! Directory walks respect (later overrides earlier):
 //!
-//! 1. A project-level `.gitignore` anywhere in the repo tree, plus the
-//!    user's global gitignore and `.git/info/exclude` if present. This
-//!    means a fresh Rust checkout with `target/` in `.gitignore`
-//!    already "just works".
-//! 2. A `.ledgerignore` file, which follows the exact same format as
-//!    `.gitignore` but is specific to Ledger. Use this for patterns
-//!    you only want Ledger to ignore.
-//! 3. A built-in safety list that is **never** overridable: `.git/`
-//!    and `.ledger/` are always skipped so the working-copy metadata
-//!    can never be uploaded.
+//! 1. `.gitignore`, the global gitignore, and `.git/info/exclude`.
+//! 2. `.ledgerignore` (same format as `.gitignore`, Ledger-specific).
+//! 3. A built-in safety list: `.git/` and `.ledger/` are always skipped.
 //!
 //! Hidden files are included (matching `git add .`), symlinks are not
 //! followed, and overlapping arguments are de-duplicated.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,6 +41,7 @@ use clap_action_command::vec1::Vec1;
 use ignore::WalkBuilder;
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::ActionCommand;
 use crate::cli::client::Client;
@@ -48,6 +52,30 @@ struct BlobMeta {
     hash: String,
     #[allow(dead_code)]
     size: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoView {
+    #[allow(dead_code)]
+    id: String,
+    #[serde(default)]
+    head_commit: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitView {
+    tree: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlatEntry {
+    path: String,
+    blob_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IndexView {
+    entries: Vec<FlatEntry>,
 }
 
 /// Custom ignore-file name, analogous to `.gitignore`.
@@ -68,6 +96,10 @@ impl ActionCommand for AddCommand {
                  \n\
                  PATH may be a file, a directory (walked recursively), or `.` \
                  to add every file under the current working directory.\n\
+                 \n\
+                 Files whose content matches the current repo state (HEAD tree \
+                 + staged index) are skipped silently — only real changes are \
+                 uploaded.\n\
                  \n\
                  Directory walks honor `.gitignore` and `.ledgerignore` files \
                  (same syntax). `.git/` and `.ledger/` are always excluded. \
@@ -111,19 +143,43 @@ impl ActionCommand for AddCommand {
         }
 
         let mut client = Client::authed()?;
-        let mut staged: usize = 0;
+        let baseline = load_baseline(&mut client, &wd.config.repo_id)?;
+
+        let mut added = 0usize;
+        let mut modified = 0usize;
+        let mut unchanged = 0usize;
 
         for file in files {
             let rel = wd.posix_relative(&file)?;
             let bytes = fs::read(&file)
                 .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
             let size = bytes.len();
+            let local_hash = sha256_hex(&bytes);
+
+            let previous = baseline.get(&rel);
+
+            // Unchanged file — nothing to do.
+            if previous.is_some_and(|h| h == &local_hash) {
+                unchanged += 1;
+                continue;
+            }
+
+            let mark = if previous.is_some() { 'M' } else { '+' };
             let encoded = B64.encode(&bytes);
 
             let blob: BlobMeta = client.post(
                 "/v1/blobs",
                 &serde_json::json!({ "content_base64": encoded }),
             )?;
+
+            // Defensive: the server-computed hash should match ours.
+            if blob.hash != local_hash {
+                return Err(format!(
+                    "hash mismatch for {rel}: local {local_hash} vs server {}",
+                    blob.hash
+                )
+                .into());
+            }
 
             let _: Value = client.post(
                 &format!("/v1/repos/{}/index", wd.config.repo_id),
@@ -133,13 +189,23 @@ impl ActionCommand for AddCommand {
                 }),
             )?;
 
-            println!("+ {rel}  {}  ({} bytes)", short_hash(&blob.hash), size);
-            staged += 1;
+            println!("{mark} {rel}  {}  ({size} bytes)", short_hash(&blob.hash));
+            if previous.is_some() {
+                modified += 1;
+            } else {
+                added += 1;
+            }
         }
 
-        if staged > 1 {
-            println!("Staged {staged} files.");
+        let touched = added + modified;
+        if touched == 0 {
+            println!("No changes to stage ({unchanged} file(s) already up to date).");
+        } else {
+            println!(
+                "Staged {touched} change(s): {added} new, {modified} modified; {unchanged} unchanged."
+            );
         }
+
         Ok(())
     }
 }
@@ -150,9 +216,6 @@ impl ActionCommand for AddCommand {
 ///   wins; matches `git add <file>` behavior).
 /// * Directory → walked with [`ignore::WalkBuilder`], honoring
 ///   `.gitignore` and `.ledgerignore`.
-///
-/// Each file is canonicalised so the same file reached via two
-/// different argument paths is only staged once.
 fn collect_files(
     wd: &Workdir,
     input: &Path,
@@ -176,7 +239,6 @@ fn collect_files(
     }
 
     if meta.is_dir() {
-        // Ensure the directory is actually inside the workdir.
         wd.posix_relative(input)
             .map_err(|e| format!("{}: {e}", input.display()))?;
 
@@ -196,11 +258,11 @@ fn walk_dir(
 ) -> Result<(), Box<dyn Error>> {
     let mut builder = WalkBuilder::new(dir);
     builder
-        .hidden(false) // include dotfiles (matches `git add .`)
-        .git_ignore(true) // honor .gitignore
-        .git_global(true) // honor ~/.config/git/ignore
-        .git_exclude(true) // honor .git/info/exclude
-        .parents(true) // walk up to find repo-root .gitignore
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
         .follow_links(false)
         .add_custom_ignore_filename(LEDGERIGNORE);
 
@@ -208,23 +270,16 @@ fn walk_dir(
         let entry = match result {
             Ok(e) => e,
             Err(e) => {
-                // Permission denied / transient IO on a single entry —
-                // warn and keep going rather than abort the whole add.
                 eprintln!("warning: {e}");
                 continue;
             }
         };
 
         let path = entry.path();
-
-        // Hard safety rail: never stage anything inside `.git/` or
-        // `.ledger/`, regardless of what ignore rules say.
         if has_excluded_component(path) {
             continue;
         }
 
-        // `file_type()` is `None` only for the synthetic stdin entry,
-        // which we never produce here.
         let file_type = match entry.file_type() {
             Some(t) => t,
             None => continue,
@@ -253,6 +308,38 @@ fn push_file(path: &Path, seen: &mut BTreeSet<PathBuf>, out: &mut Vec<PathBuf>) 
     if seen.insert(canonical) {
         out.push(path.to_path_buf());
     }
+}
+
+/// Build `path -> expected_blob_hash` for every file the repo already
+/// believes it has. HEAD tree is the base layer; staged index entries
+/// overlay on top (they represent the newer intent).
+fn load_baseline(
+    client: &mut Client,
+    repo_id: &str,
+) -> Result<HashMap<String, String>, Box<dyn Error>> {
+    let mut baseline: HashMap<String, String> = HashMap::new();
+
+    let repo: RepoView = client.get(&format!("/v1/repos/{repo_id}"))?;
+    if let Some(head) = repo.head_commit.as_deref() {
+        let commit: CommitView = client.get(&format!("/v1/commits/{head}"))?;
+        let flat: Vec<FlatEntry> = client.get(&format!("/v1/trees/{}/flat", commit.tree))?;
+        for entry in flat {
+            baseline.insert(entry.path, entry.blob_hash);
+        }
+    }
+
+    let index: IndexView = client.get(&format!("/v1/repos/{repo_id}/index"))?;
+    for entry in index.entries {
+        baseline.insert(entry.path, entry.blob_hash);
+    }
+
+    Ok(baseline)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }
 
 fn short_hash(h: &str) -> String {

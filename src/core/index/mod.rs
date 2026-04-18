@@ -113,6 +113,12 @@ pub async fn clear(repo_id: ObjectId) -> CoreResult<()> {
 /// Materializes the staging index as `tree → commit`, chains onto the
 /// current HEAD as parent, and advances HEAD.
 ///
+/// The staging index is treated as a **delta on top of HEAD**: every
+/// path in HEAD's flattened tree is carried forward, and the index
+/// entries overlay on top (same path wins). This matches user
+/// intuition — `ledger add <one-file>` followed by `ledger commit`
+/// should not silently erase the other 39 files already in HEAD.
+///
 /// Fails if nothing is staged.
 pub async fn commit_staged(repo_id: ObjectId, message: &str) -> CoreResult<Commit> {
     if message.trim().is_empty() {
@@ -126,9 +132,29 @@ pub async fn commit_staged(repo_id: ObjectId, message: &str) -> CoreResult<Commi
         ));
     }
 
-    let tree_hash = build_tree(&index.entries).await?;
-
     let repo = crate::core::repo::get(repo_id).await?;
+
+    // Build the complete next-tree snapshot: HEAD tree + index overlay.
+    // A BTreeMap gives us stable ordering and O(log n) path replacement.
+    let mut snapshot: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(head_hash) = repo.head_commit.as_deref() {
+        let head_commit = crate::core::commit::get(head_hash).await?;
+        let head_flat = crate::core::tree::flatten(&head_commit.tree).await?;
+        for (path, blob_hash) in head_flat {
+            snapshot.insert(path, blob_hash);
+        }
+    }
+    for entry in &index.entries {
+        snapshot.insert(entry.path.clone(), entry.blob_hash.clone());
+    }
+
+    let materialized: Vec<IndexEntry> = snapshot
+        .into_iter()
+        .map(|(path, blob_hash)| IndexEntry { path, blob_hash })
+        .collect();
+
+    let tree_hash = build_tree(&materialized).await?;
+
     let parents: Vec<String> = repo.head_commit.into_iter().collect();
 
     let commit =
