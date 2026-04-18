@@ -1,1 +1,6 @@
 /target
+
+# Machine-specific MSVC/SDK overrides for Windows; regenerate with
+# scripts/setup-windows-env.ps1 after cloning.
+/.cargo/config.toml
+*example*
