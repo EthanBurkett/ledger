@@ -39,6 +39,7 @@ impl App {
     }
 
     /// Returns the global `App` if it has been initialized.
+    #[allow(dead_code)]
     pub fn try_get() -> Option<&'static App> {
         APP.get()
     }

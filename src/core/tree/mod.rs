@@ -131,18 +131,25 @@ fn walk<'a>(
 /// Resolves a POSIX path within a tree to its leaf target, returning
 /// `(entry_type, hash)`.
 pub async fn resolve_path(root_hash: &str, path: &str) -> CoreResult<(String, String)> {
+    // Collect the path components up-front so no iterator/closure lives across
+    // an `.await` boundary — some of those combinators trip HRTB inference on
+    // axum handler bounds.
+    let mut parts: Vec<String> = Vec::new();
+    for segment in path.split('/') {
+        if !segment.is_empty() {
+            parts.push(segment.to_string());
+        }
+    }
+
     let mut current = root_hash.to_string();
     let mut current_type = ENTRY_TREE.to_string();
-    let mut components = path
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .peekable();
 
-    if components.peek().is_none() {
+    if parts.is_empty() {
         return Ok((current_type, current));
     }
 
-    while let Some(component) = components.next() {
+    let last = parts.len() - 1;
+    for (idx, component) in parts.iter().enumerate() {
         if current_type != ENTRY_TREE {
             return Err(CoreError::NotFound {
                 entity: "tree entry",
@@ -150,15 +157,20 @@ pub async fn resolve_path(root_hash: &str, path: &str) -> CoreResult<(String, St
             });
         }
         let tree = get(&current).await?;
-        let entry = tree.entries.into_iter().find(|e| e.name == component).ok_or(
-            CoreError::NotFound {
-                entity: "tree entry",
-                id: path.to_string(),
-            },
-        )?;
-        current = entry.hash;
-        current_type = entry.entry_type;
-        if components.peek().is_none() {
+        let mut next: Option<(String, String)> = None;
+        for entry in tree.entries {
+            if entry.name == *component {
+                next = Some((entry.entry_type, entry.hash));
+                break;
+            }
+        }
+        let (next_type, next_hash) = next.ok_or(CoreError::NotFound {
+            entity: "tree entry",
+            id: path.to_string(),
+        })?;
+        current = next_hash;
+        current_type = next_type;
+        if idx == last {
             return Ok((current_type, current));
         }
     }
