@@ -5,4 +5,5 @@
 //! `crate::register_routes!(register);` at the bottom of the file, and then
 //! add `pub mod my_file;` below so the registration runs.
 
+pub mod auth;
 pub mod health;

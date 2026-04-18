@@ -4,3 +4,8 @@
 # scripts/setup-windows-env.ps1 after cloning.
 /.cargo/config.toml
 *example*
+
+# Local env files (never commit secrets).
+.env
+.env.*
+!.env.example

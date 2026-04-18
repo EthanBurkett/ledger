@@ -11,8 +11,11 @@ pub mod commit;
 pub mod index;
 pub mod path_index;
 pub mod r#ref;
+pub mod refresh_token;
 pub mod repo;
+mod repo_access;
 pub mod tree;
+pub mod user;
 
 /// Registers a [`MongoModel`](crate::db::MongoModel) with the global sync registry.
 ///

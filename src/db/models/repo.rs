@@ -9,6 +9,8 @@ pub struct Repo {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<ObjectId>,
 
+    pub owner_id: ObjectId,
+
     pub name: String,
 
     pub head_commit: Option<String>,

@@ -8,10 +8,13 @@ use std::sync::OnceLock;
 
 use mongodb::Database;
 
+use crate::auth::AuthConfig;
+
 /// Shared state for the running process.
 #[derive(Clone)]
 pub struct App {
     db: Database,
+    auth: AuthConfig,
 }
 
 static APP: OnceLock<App> = OnceLock::new();
@@ -29,8 +32,8 @@ impl std::error::Error for AlreadyInitialized {}
 
 impl App {
     /// Installs the global `App`. Returns an error if called more than once.
-    pub fn init(db: Database) -> Result<&'static App, AlreadyInitialized> {
-        let app = App { db };
+    pub fn init(db: Database, auth: AuthConfig) -> Result<&'static App, AlreadyInitialized> {
+        let app = App { db, auth };
         APP.set(app).map_err(|_| AlreadyInitialized)?;
         Ok(APP.get().expect("App was just set"))
     }
@@ -52,6 +55,10 @@ impl App {
 
     pub fn db(&self) -> &Database {
         &self.db
+    }
+
+    pub fn auth_config(&self) -> &AuthConfig {
+        &self.auth
     }
 }
 

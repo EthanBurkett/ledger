@@ -68,13 +68,11 @@ impl ApiError {
     }
 
     pub fn bad_request(detail: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, "bad_request", "Bad request")
-            .with_detail(detail)
+        Self::new(StatusCode::BAD_REQUEST, "bad_request", "Bad request").with_detail(detail)
     }
 
     pub fn unauthorized(detail: impl Into<String>) -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", "Unauthorized")
-            .with_detail(detail)
+        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", "Unauthorized").with_detail(detail)
     }
 
     pub fn forbidden(detail: impl Into<String>) -> Self {
@@ -82,8 +80,7 @@ impl ApiError {
     }
 
     pub fn not_found(detail: impl Into<String>) -> Self {
-        Self::new(StatusCode::NOT_FOUND, "not_found", "Resource not found")
-            .with_detail(detail)
+        Self::new(StatusCode::NOT_FOUND, "not_found", "Resource not found").with_detail(detail)
     }
 
     pub fn conflict(detail: impl Into<String>) -> Self {
@@ -158,7 +155,7 @@ impl From<serde_json::Error> for ApiError {
 }
 
 impl ApiError {
-    fn with_code(mut self, code: &str, title: &str) -> Self {
+    pub(crate) fn with_code(mut self, code: &str, title: &str) -> Self {
         self.code = code.to_string();
         self.title = title.to_string();
         self

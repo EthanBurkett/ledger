@@ -5,7 +5,7 @@ use clap::{Arg, ArgMatches, Command};
 use clap_action_command::vec1::Vec1;
 
 use super::ActionCommand;
-use crate::{api, app::App, db};
+use crate::{api, app::App, auth::AuthConfig, db};
 
 const DEFAULT_URI: &str = "mongodb://127.0.0.1:27017";
 const DEFAULT_DB_NAME: &str = "ledger";
@@ -103,9 +103,13 @@ fn init_tracing() {
 }
 
 async fn run(uri: &str, db_name: &str, http_addr: SocketAddr) -> Result<(), Box<dyn Error>> {
+    if let Some(path) = crate::env::loaded_path() {
+        tracing::info!(env_file = %path.display(), "ledger: loaded .env");
+    }
+
     tracing::info!(uri, db_name, "ledger: connecting to MongoDB");
     let database = db::connect_and_sync(uri, Some(db_name)).await?;
-    App::init(database)?;
+    App::init(database, AuthConfig::from_env())?;
 
     let models: Vec<&'static str> = db::registered_models()
         .map(|m| m.collection_name)
